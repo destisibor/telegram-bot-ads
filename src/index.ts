@@ -1,5 +1,6 @@
 import { Telegraf, Context } from 'telegraf';
 import * as dotenv from 'dotenv';
+import * as http from 'http'; // Imported native HTTP module for Render
 
 // Load environment variables from the .env file
 dotenv.config();
@@ -9,6 +10,14 @@ const token = process.env.BOT_TOKEN;
 if (!token) {
     throw new Error('BOT_TOKEN must be provided in the .env file');
 }
+
+// Create a dummy web server so Render's Free Web Service doesn't crash
+http.createServer((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    res.end('Bot is running successfully!');
+}).listen(process.env.PORT || 3000, () => {
+    console.log('🌐 Dummy web server is listening for Render port checks');
+});
 
 const bot = new Telegraf(token);
 
