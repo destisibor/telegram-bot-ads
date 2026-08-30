@@ -1,6 +1,6 @@
 import { Telegraf, Context } from 'telegraf';
 import * as dotenv from 'dotenv';
-import * as http from 'http'; // Imported native HTTP module for Render
+import * as http from 'http';
 
 // Load environment variables from the .env file
 dotenv.config();
@@ -21,12 +21,12 @@ http.createServer((req, res) => {
 
 const bot = new Telegraf(token);
 
-// Store the interval so we can stop it later
-let adInterval: NodeJS.Timeout | null = null;
+// Map to track active timeouts per group, preventing concurrency overrides
+const activeCycles = new Map<number, NodeJS.Timeout>();
 
 // Timing configuration (in milliseconds)
-const POST_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
-const DELETE_DELAY_MS = 20 * 60 * 1000;  // 20 minutes
+const DELETE_DELAY_MS = 30 * 60 * 1000; // 30 minutes before deletion
+const POST_DELAY_MS = 1 * 60 * 1000;    // 1 minute delay after deletion before reposting
 
 // The reusable ad message
 const adMessageText = `📢 <b>YOUR CAPITAL DESERVES A PLAN — NOT JUST A PLACE TO SIT</b>
@@ -82,52 +82,64 @@ bot.command('packages', (ctx: Context) => {
 
 // Start the automated ad cycle
 bot.command('start_ads', (ctx: Context) => {
-    if (!ctx.chat) {
-        return;
-    }
+    if (!ctx.chat) return;
 
     const chatId = ctx.chat.id;
 
-    if (adInterval) {
+    if (activeCycles.has(chatId)) {
         ctx.reply('⚠️ The automated ads are already running in this group!');
         return;
     }
 
-    ctx.reply('✅ Auto-ads activated! Posting every 10 minutes and deleting after 20 minutes.');
+    ctx.reply('✅ Auto-ads activated! The bot will post, delete the message after 30 minutes, wait 1 minute, and post again.');
 
-    // The function that posts the ad and schedules its deletion
-    const postAndScheduleDeletion = async () => {
+    const runCycle = async () => {
         try {
-            // 1. Send the message
+            // 1. Post the ad
             const sentMessage = await ctx.telegram.sendMessage(chatId, adMessageText, { parse_mode: 'HTML' });
 
-            // 2. Schedule the deletion 20 minutes from now
-            setTimeout(() => {
-                ctx.telegram.deleteMessage(chatId, sentMessage.message_id).catch(() => {
+            // 2. Schedule the deletion 30 minutes from now
+            const deletionTimeout = setTimeout(async () => {
+                await ctx.telegram.deleteMessage(chatId, sentMessage.message_id).catch(() => {
                     console.error(`Could not delete message ${sentMessage.message_id} (it may have already been removed).`);
                 });
+
+                // 3. Schedule the NEXT post 1 minute after deletion
+                const nextPostTimeout = setTimeout(() => {
+                    runCycle();
+                }, POST_DELAY_MS);
+
+                // Update the tracker so /stop_ads works during the 1-minute gap
+                activeCycles.set(chatId, nextPostTimeout);
+
             }, DELETE_DELAY_MS);
+
+            // Track the initial deletion timeout
+            activeCycles.set(chatId, deletionTimeout);
 
         } catch (error) {
             console.error('Error in the posting cycle:', error);
+            activeCycles.delete(chatId);
         }
     };
 
     // Trigger the first post immediately
-    postAndScheduleDeletion();
-
-    // Set up the recurring 10-minute loop
-    adInterval = setInterval(postAndScheduleDeletion, POST_INTERVAL_MS);
+    runCycle();
 });
 
 // Stop the automated ad cycle
 bot.command('stop_ads', (ctx: Context) => {
-    if (adInterval) {
-        clearInterval(adInterval);
-        adInterval = null;
+    if (!ctx.chat) return;
+
+    const chatId = ctx.chat.id;
+    const timeout = activeCycles.get(chatId);
+
+    if (timeout) {
+        clearTimeout(timeout);
+        activeCycles.delete(chatId);
         ctx.reply('🛑 Auto-ads have been successfully stopped.');
     } else {
-        ctx.reply('There are no ads currently running.');
+        ctx.reply('There are no ads currently running in this group.');
     }
 });
 
