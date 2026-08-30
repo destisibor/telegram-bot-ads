@@ -11,12 +11,13 @@ if (!token) {
     throw new Error('BOT_TOKEN must be provided in the .env file');
 }
 
-// Create a dummy web server so Render's Free Web Service doesn't crash
+// 1. Create the dummy web server immediately and explicitly bind to 0.0.0.0 for Render
+const port = Number(process.env.PORT) || 3000;
 http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
     res.end('Bot is running successfully!');
-}).listen(process.env.PORT || 3000, () => {
-    console.log('🌐 Dummy web server is listening for Render port checks');
+}).listen(port, '0.0.0.0', () => {
+    console.log(`🌐 Dummy web server is listening on port ${port} for Render checks`);
 });
 
 const bot = new Telegraf(token);
@@ -143,11 +144,22 @@ bot.command('stop_ads', (ctx: Context) => {
     }
 });
 
-// Launch the bot
-bot.launch().then(() => {
-    console.log('🤖 Bot @Run_Node3_bot is up and running!');
-});
+// 2. Delay the bot launch by 10 seconds to avoid 409 Conflicts during deployment
+setTimeout(() => {
+    // dropPendingUpdates prevents the bot from spamming old commands sent while it was offline
+    bot.launch({ dropPendingUpdates: true }).then(() => {
+        console.log('🤖 Bot @Run_Node3_bot is up and running!');
+    }).catch((err) => {
+        console.error('Critical error launching bot:', err);
+    });
+}, 10000);
 
 // Enable graceful stop for standard Node.js termination signals
-process.once('SIGINT', () => bot.stop('SIGINT'));
-process.once('SIGTERM', () => bot.stop('SIGTERM'));
+process.once('SIGINT', () => {
+    bot.stop('SIGINT');
+    process.exit(0);
+});
+process.once('SIGTERM', () => {
+    bot.stop('SIGTERM');
+    process.exit(0);
+});
