@@ -1,6 +1,7 @@
-import { Telegraf, Context } from 'telegraf';
+import { Telegraf } from 'telegraf';
+import type { Context } from 'telegraf';
 import { message, channelPost, editedMessage, editedChannelPost } from 'telegraf/filters';
-import { Translate } from '@google-cloud/translate/build/src/v2';
+import { v2 as TranslateV2 } from '@google-cloud/translate';
 import * as dotenv from 'dotenv';
 import * as http from 'http';
 
@@ -15,7 +16,7 @@ if (!token) {
 }
 
 // Parse credentials from an environment variable string on Render
-let credentialsConfig = undefined;
+let credentialsConfig: Record<string, unknown> | undefined = undefined;
 if (process.env.GOOGLE_CREDENTIALS_JSON) {
     try {
         credentialsConfig = JSON.parse(process.env.GOOGLE_CREDENTIALS_JSON);
@@ -25,6 +26,7 @@ if (process.env.GOOGLE_CREDENTIALS_JSON) {
 }
 
 // Initialize Google Cloud Translation API with parsed credentials or fallback to default file path
+const { Translate } = TranslateV2;
 const translateClient = new Translate({
     projectId: googleProjectId,
     credentials: credentialsConfig
@@ -174,8 +176,12 @@ async function generateTranslationMessage(text: string): Promise<string> {
     return finalMessage.trim();
 }
 
-// Intercept BOTH text and photo messages to catch image captions
-bot.on([message('text'), message('photo'), channelPost('text'), channelPost('photo')], async (ctx) => {
+// -------------------------------------------------------------------
+// Shared handler for incoming (new) messages and photos. Registered
+// once per filter below — passing an array to bot.on() is silently
+// ignored by Telegraf, so each filter must be registered individually.
+// -------------------------------------------------------------------
+const handleNewMessage = async (ctx: Context) => {
     if (!translationConfig.enabled) return;
 
     let originalText = '';
@@ -184,7 +190,7 @@ bot.on([message('text'), message('photo'), channelPost('text'), channelPost('pho
     if (!msg) return;
 
     // Extract standard text OR the photo caption
-    if ('text' in msg) originalText = msg.text;
+    if ('text' in msg && msg.text) originalText = msg.text;
     if ('caption' in msg && msg.caption) originalText = msg.caption;
 
     const originalMsgId = msg.message_id;
@@ -195,7 +201,7 @@ bot.on([message('text'), message('photo'), channelPost('text'), channelPost('pho
     if (ctx.from?.is_bot) return;
 
     // Restrict to specific chat if configured in .env
-    if (translationConfig.targetChatId && ctx.chat.id.toString() !== translationConfig.targetChatId) return;
+    if (translationConfig.targetChatId && ctx.chat && ctx.chat.id.toString() !== translationConfig.targetChatId) return;
 
     const translatedPayload = await generateTranslationMessage(originalText);
 
@@ -204,17 +210,25 @@ bot.on([message('text'), message('photo'), channelPost('text'), channelPost('pho
             // This will safely reply to the original message/photo with the translations
             const sentMsg = await ctx.reply(translatedPayload, {
                 parse_mode: 'HTML',
-                reply_parameters: { message_id: originalMsgId }
+                reply_to_message_id: originalMsgId
             });
             translationMap.set(originalMsgId, sentMsg.message_id);
         } catch (error) {
             console.error('Failed to send translation payload:', error);
         }
     }
-});
+};
 
-// Intercept Edits for both text and captions
-bot.on([editedMessage('text'), editedMessage('photo'), editedChannelPost('text'), editedChannelPost('photo')], async (ctx) => {
+bot.on(message('text'), handleNewMessage);
+bot.on(message('photo'), handleNewMessage);
+bot.on(channelPost('text'), handleNewMessage);
+bot.on(channelPost('photo'), handleNewMessage);
+
+// -------------------------------------------------------------------
+// Shared handler for edited messages and photos. Registered once per
+// filter below for the same reason as above.
+// -------------------------------------------------------------------
+const handleEditedMessage = async (ctx: Context) => {
     if (!translationConfig.enabled) return;
 
     let originalText = '';
@@ -223,14 +237,14 @@ bot.on([editedMessage('text'), editedMessage('photo'), editedChannelPost('text')
     if (!msg) return;
     if (ctx.from?.is_bot) return;
 
-    if ('text' in msg) originalText = msg.text;
+    if ('text' in msg && msg.text) originalText = msg.text;
     if ('caption' in msg && msg.caption) originalText = msg.caption;
 
     const originalMsgId = msg.message_id;
 
     const translatedMsgId = translationMap.get(originalMsgId);
 
-    if (translatedMsgId && originalText) {
+    if (translatedMsgId && originalText && ctx.chat) {
         const updatedTranslatedPayload = await generateTranslationMessage(originalText);
 
         if (updatedTranslatedPayload) {
@@ -243,7 +257,12 @@ bot.on([editedMessage('text'), editedMessage('photo'), editedChannelPost('text')
             }
         }
     }
-});
+};
+
+bot.on(editedMessage('text'), handleEditedMessage);
+bot.on(editedMessage('photo'), handleEditedMessage);
+bot.on(editedChannelPost('text'), handleEditedMessage);
+bot.on(editedChannelPost('photo'), handleEditedMessage);
 
 // --- Admin Commands ---
 bot.command('toggle_translation', (ctx) => {
