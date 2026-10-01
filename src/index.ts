@@ -14,8 +14,21 @@ if (!token) {
     throw new Error('BOT_TOKEN must be provided in the .env file');
 }
 
-// Initialize Google Cloud Translation API
-const translateClient = new Translate({ projectId: googleProjectId });
+// Parse credentials from an environment variable string on Render
+let credentialsConfig = undefined;
+if (process.env.GOOGLE_CREDENTIALS_JSON) {
+    try {
+        credentialsConfig = JSON.parse(process.env.GOOGLE_CREDENTIALS_JSON);
+    } catch (e) {
+        console.error('Failed to parse GOOGLE_CREDENTIALS_JSON:', e);
+    }
+}
+
+// Initialize Google Cloud Translation API with parsed credentials or fallback to default file path
+const translateClient = new Translate({
+    projectId: googleProjectId,
+    credentials: credentialsConfig
+});
 
 // --- Admin Configuration State ---
 const translationConfig = {
