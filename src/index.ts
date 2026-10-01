@@ -184,8 +184,8 @@ const handleNewMessage = async (ctx: Context) => {
 
     if (!originalText || !originalMsgId) return;
 
-    // PREVENT BOT LOOPS: Ignore all messages sent by any bot (including itself)
-    if (ctx.from?.is_bot) return;
+    // Ignore standard bots to prevent loops, but ALLOW Anonymous Admins and Channel-replies
+    if (ctx.from?.is_bot && ctx.from.username !== 'GroupAnonymousBot' && ctx.from.username !== 'Channel_Bot') return;
 
     // Restrict to specific chat if configured in .env
     if (translationConfig.targetChatId && ctx.chat && ctx.chat.id.toString() !== translationConfig.targetChatId) return;
