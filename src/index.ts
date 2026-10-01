@@ -210,7 +210,7 @@ const handleNewMessage = async (ctx: Context) => {
             // This will safely reply to the original message/photo with the translations
             const sentMsg = await ctx.reply(translatedPayload, {
                 parse_mode: 'HTML',
-                reply_to_message_id: originalMsgId
+                reply_parameters: { message_id: originalMsgId }
             });
             translationMap.set(originalMsgId, sentMsg.message_id);
         } catch (error) {
