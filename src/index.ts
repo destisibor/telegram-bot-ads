@@ -1,7 +1,7 @@
 import { Telegraf } from 'telegraf';
 import type { Context } from 'telegraf';
 import { message, channelPost, editedMessage, editedChannelPost } from 'telegraf/filters';
-import { v2 as TranslateV2 } from '@google-cloud/translate';
+import { translate } from '@vitalets/google-translate-api';
 import * as dotenv from 'dotenv';
 import * as http from 'http';
 
@@ -9,28 +9,10 @@ import * as http from 'http';
 dotenv.config();
 
 const token = process.env.BOT_TOKEN;
-const googleProjectId = process.env.GOOGLE_PROJECT_ID;
 
 if (!token) {
     throw new Error('BOT_TOKEN must be provided in the .env file');
 }
-
-// Parse credentials from an environment variable string on Render
-let credentialsConfig: Record<string, unknown> | undefined = undefined;
-if (process.env.GOOGLE_CREDENTIALS_JSON) {
-    try {
-        credentialsConfig = JSON.parse(process.env.GOOGLE_CREDENTIALS_JSON);
-    } catch (e) {
-        console.error('Failed to parse GOOGLE_CREDENTIALS_JSON:', e);
-    }
-}
-
-// Initialize Google Cloud Translation API with parsed credentials or fallback to default file path
-const { Translate } = TranslateV2;
-const translateClient = new Translate({
-    projectId: googleProjectId,
-    credentials: credentialsConfig
-});
 
 // --- Admin Configuration State ---
 const translationConfig = {
@@ -154,8 +136,8 @@ bot.command('stop_ads', (ctx: Context) => {
 
 async function translateContent(text: string, langCode: string): Promise<string> {
     try {
-        const [translation] = await translateClient.translate(text, { to: langCode, format: 'html' });
-        return translation;
+        const result = await translate(text, { to: langCode });
+        return result.text;
     } catch (error) {
         console.error(`Translation failed for ${langCode}:`, error);
         return '';
