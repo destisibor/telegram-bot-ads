@@ -134,6 +134,9 @@ bot.command('stop_ads', (ctx: Context) => {
 
 // --- Live Translation Engine Logic ---
 
+// Helper function to create a delay for Google's rate limits
+const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
 async function translateContent(text: string, langCode: string): Promise<string> {
     try {
         const result = await translate(text, { to: langCode });
@@ -153,6 +156,8 @@ async function generateTranslationMessage(text: string): Promise<string> {
             if (translatedText) {
                 finalMessage += `<b>${config.name}</b>\n${translatedText}\n\n`;
             }
+            // Wait 1.5 seconds between requests to avoid TooManyRequestsError
+            await delay(1500);
         }
     }
     return finalMessage.trim();
