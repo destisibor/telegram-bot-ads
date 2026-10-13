@@ -2,7 +2,7 @@ import { Telegraf } from 'telegraf';
 import type { Context } from 'telegraf';
 import { message, channelPost, editedMessage, editedChannelPost } from 'telegraf/filters';
 import { translate } from '@vitalets/google-translate-api';
-import { HttpsProxyAgent } from 'https-proxy-agent';
+import { HttpsProxyAgent } from 'https-proxy-agent'; // <-- FIXED: Using HTTPS agent
 import * as dotenv from 'dotenv';
 
 // Load environment variables
@@ -74,7 +74,6 @@ bot.command('packages', async (ctx: Context) => {
 });
 
 // Handles the automated posting cycle
-// FIXED: Added async and await to ensure the webhook doesn't close the connection prematurely
 bot.command('start_ads', async (ctx: Context) => {
     if (!ctx.chat) return;
     const chatId = ctx.chat.id;
@@ -116,7 +115,6 @@ bot.command('start_ads', async (ctx: Context) => {
 });
 
 // Stops the automated cycle
-// FIXED: Added async and await here too
 bot.command('stop_ads', async (ctx: Context) => {
     if (!ctx.chat) return;
     const chatId = ctx.chat.id;
@@ -134,9 +132,8 @@ bot.command('stop_ads', async (ctx: Context) => {
 // --- Live Translation Engine Logic ---
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
-// Setup the proxy agent
+// --- FIXED: Proxy setup using HttpsProxyAgent ---
 const proxyUrl = process.env.PROXY_URL;
-// Using HttpsProxyAgent for secure (https://) proxy connections
 const agent = proxyUrl ? new HttpsProxyAgent(proxyUrl) : undefined;
 
 async function translateContent(text: string, langCode: string): Promise<string> {
@@ -264,7 +261,6 @@ if (RENDER_URL) {
         webhook: {
             domain: RENDER_URL,
             port: PORT,
-            // FIXED: Changed from secret_token to secretToken to match Telegraf's TypeScript definitions
             secretToken: process.env.WEBHOOK_SECRET
         }
     }).then(() => {
