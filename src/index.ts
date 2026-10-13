@@ -2,7 +2,7 @@ import { Telegraf } from 'telegraf';
 import type { Context } from 'telegraf';
 import { message, channelPost, editedMessage, editedChannelPost } from 'telegraf/filters';
 import { translate } from '@vitalets/google-translate-api';
-import { HttpsProxyAgent } from 'https-proxy-agent'; // Changed to https-proxy-agent
+import { HttpsProxyAgent } from 'https-proxy-agent';
 import * as dotenv from 'dotenv';
 
 // Load environment variables
@@ -262,7 +262,8 @@ if (RENDER_URL) {
         webhook: {
             domain: RENDER_URL,
             port: PORT,
-            secret_token: process.env.WEBHOOK_SECRET
+            // FIXED: Changed from secret_token to secretToken to match Telegraf's TypeScript definitions
+            secretToken: process.env.WEBHOOK_SECRET
         }
     }).then(() => {
         console.log(`🚀 Bot is running in Webhook mode on Render (Port ${PORT})`);
