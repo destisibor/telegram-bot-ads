@@ -3,7 +3,6 @@ import type { Context } from 'telegraf';
 import { message, channelPost, editedMessage, editedChannelPost } from 'telegraf/filters';
 import { translate } from '@vitalets/google-translate-api';
 import * as dotenv from 'dotenv';
-import * as http from 'http';
 
 // Load environment variables
 dotenv.config();
@@ -29,16 +28,13 @@ const translationConfig = {
 // Map to track original message IDs to their translated message IDs for live edits
 const translationMap = new Map<number, number>();
 
-// --- Dummy Server for Render ---
-const port = Number(process.env.PORT) || 3000;
-http.createServer((req, res) => {
-    res.writeHead(200, { 'Content-Type': 'text/plain' });
-    res.end('Bot is running successfully!');
-}).listen(port, '0.0.0.0', () => {
-    console.log(`🌐 Dummy web server is listening on port ${port} for Render checks`);
-});
-
 const bot = new Telegraf(token);
+
+// --- FIX 1: Global Error Handler ---
+// Prevents the bot from crashing on unhandled middleware errors
+bot.catch((err: any, ctx: Context) => {
+    console.error(`❌ Error for ${ctx.updateType}:`, err);
+});
 
 // --- Existing Ad Bot Logic ---
 const activeCycles = new Map<number, NodeJS.Timeout>();
@@ -72,7 +68,7 @@ const adMessages = [
 bot.command('packages', async (ctx: Context) => {
     for (const msg of adMessages) {
         await ctx.reply(msg, { parse_mode: 'HTML' });
-        await new Promise(resolve => setTimeout(resolve, 300)); // Brief delay prevents Telegram spam limits
+        await new Promise(resolve => setTimeout(resolve, 300));
     }
 });
 
@@ -133,16 +129,21 @@ bot.command('stop_ads', (ctx: Context) => {
 });
 
 // --- Live Translation Engine Logic ---
-
-// Helper function to create a delay for Google's rate limits
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
+// --- FIX 2: Added Timeout Wrapper ---
+// Prevents the Google Translate API from hanging your entire webhook server
 async function translateContent(text: string, langCode: string): Promise<string> {
     try {
-        const result = await translate(text, { to: langCode });
+        const translatePromise = translate(text, { to: langCode });
+        const timeoutPromise = new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error('Translation API timeout')), 10000)
+        );
+
+        const result = await Promise.race([translatePromise, timeoutPromise]);
         return result.text;
     } catch (error) {
-        console.error(`Translation failed for ${langCode}:`, error);
+        console.error(`Translation failed for ${langCode}:`, (error as Error).message);
         return '';
     }
 }
@@ -156,45 +157,32 @@ async function generateTranslationMessage(text: string): Promise<string> {
             if (translatedText) {
                 finalMessage += `<b>${config.name}</b>\n${translatedText}\n\n`;
             }
-            // Wait 1.5 seconds between requests to avoid TooManyRequestsError
+            // Keep the 1500ms delay to prevent Google rate limits
             await delay(1500);
         }
     }
     return finalMessage.trim();
 }
 
-// -------------------------------------------------------------------
-// Shared handler for incoming (new) messages and photos. Registered
-// once per filter below — passing an array to bot.on() is silently
-// ignored by Telegraf, so each filter must be registered individually.
-// -------------------------------------------------------------------
 const handleNewMessage = async (ctx: Context) => {
     if (!translationConfig.enabled) return;
 
     let originalText = '';
     const msg = ctx.message || ctx.channelPost;
-
     if (!msg) return;
 
-    // Extract standard text OR the photo caption
     if ('text' in msg && msg.text) originalText = msg.text;
     if ('caption' in msg && msg.caption) originalText = msg.caption;
 
     const originalMsgId = msg.message_id;
-
     if (!originalText || !originalMsgId) return;
-
-    // Ignore standard bots to prevent loops, but ALLOW Anonymous Admins and Channel-replies
     if (ctx.from?.is_bot && ctx.from.username !== 'GroupAnonymousBot' && ctx.from.username !== 'Channel_Bot') return;
-
-    // Restrict to specific chat if configured in .env
     if (translationConfig.targetChatId && ctx.chat && ctx.chat.id.toString() !== translationConfig.targetChatId) return;
 
     const translatedPayload = await generateTranslationMessage(originalText);
 
     if (translatedPayload) {
         try {
-            // This will safely reply to the original message/photo with the translations
             const sentMsg = await ctx.reply(translatedPayload, {
                 parse_mode: 'HTML',
                 reply_parameters: { message_id: originalMsgId }
@@ -211,16 +199,11 @@ bot.on(message('photo'), handleNewMessage);
 bot.on(channelPost('text'), handleNewMessage);
 bot.on(channelPost('photo'), handleNewMessage);
 
-// -------------------------------------------------------------------
-// Shared handler for edited messages and photos. Registered once per
-// filter below for the same reason as above.
-// -------------------------------------------------------------------
 const handleEditedMessage = async (ctx: Context) => {
     if (!translationConfig.enabled) return;
 
     let originalText = '';
     const msg = ctx.editedMessage || ctx.editedChannelPost;
-
     if (!msg) return;
     if (ctx.from?.is_bot) return;
 
@@ -228,7 +211,6 @@ const handleEditedMessage = async (ctx: Context) => {
     if ('caption' in msg && msg.caption) originalText = msg.caption;
 
     const originalMsgId = msg.message_id;
-
     const translatedMsgId = translationMap.get(originalMsgId);
 
     if (translatedMsgId && originalText && ctx.chat) {
@@ -265,21 +247,34 @@ bot.command('status', (ctx) => {
     ctx.reply(statusText, { parse_mode: 'HTML' });
 });
 
-// --- Launch & Initialization ---
-setTimeout(() => {
-    // Removed { dropPendingUpdates: true } to prevent initialization hangs
-    bot.launch().then(() => {
-        console.log('🤖 Bot @Run_Node3_bot with Multi-Translation is up and running!');
-    }).catch((err) => {
-        console.error('Critical error launching bot:', err);
-    });
-}, 10000);
+// --- RENDER WEBHOOK LAUNCH LOGIC ---
+const PORT = Number(process.env.PORT) || 3000;
+const RENDER_URL = process.env.RENDER_EXTERNAL_URL; // Render provides this automatically
 
-process.once('SIGINT', () => {
-    bot.stop('SIGINT');
-    process.exit(0);
-});
-process.once('SIGTERM', () => {
-    bot.stop('SIGTERM');
-    process.exit(0);
-});
+if (RENDER_URL) {
+    // If running on Render, use Webhooks to bypass the polling timeout
+    bot.launch({
+        webhook: {
+            domain: RENDER_URL,
+            port: PORT,
+            // --- FIX 4: Optional Webhook Secret Token ---
+            // Set WEBHOOK_SECRET in your Render environment variables for extra security
+            secret_token: process.env.WEBHOOK_SECRET
+        }
+    }).then(() => {
+        console.log(`🚀 Bot is running in Webhook mode on Render (Port ${PORT})`);
+    }).catch((err) => {
+        console.error('Critical error launching Webhook:', err);
+    });
+} else {
+    // Fallback for local testing
+    // --- FIX 3: Added dropPendingUpdates ---
+    bot.launch({ dropPendingUpdates: true }).then(() => {
+        console.log('🤖 Bot is running in Local Polling mode');
+    }).catch((err) => {
+        console.error('Critical error launching Polling:', err);
+    });
+}
+
+process.once('SIGINT', () => { bot.stop('SIGINT'); process.exit(0); });
+process.once('SIGTERM', () => { bot.stop('SIGTERM'); process.exit(0); });
