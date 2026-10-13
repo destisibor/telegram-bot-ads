@@ -74,16 +74,17 @@ bot.command('packages', async (ctx: Context) => {
 });
 
 // Handles the automated posting cycle
-bot.command('start_ads', (ctx: Context) => {
+// FIXED: Added async and await to ensure the webhook doesn't close the connection prematurely
+bot.command('start_ads', async (ctx: Context) => {
     if (!ctx.chat) return;
     const chatId = ctx.chat.id;
 
     if (activeCycles.has(chatId)) {
-        ctx.reply('⚠️ The automated ads are already running in this group!');
+        await ctx.reply('⚠️ The automated ads are already running in this group!');
         return;
     }
 
-    ctx.reply('✅ Auto-ads activated! The bot will post the packages sequentially, delete them after 30 minutes, wait 1 minute, and post again.');
+    await ctx.reply('✅ Auto-ads activated! The bot will post the packages sequentially, delete them after 30 minutes, wait 1 minute, and post again.');
 
     const runCycle = async () => {
         try {
@@ -115,7 +116,8 @@ bot.command('start_ads', (ctx: Context) => {
 });
 
 // Stops the automated cycle
-bot.command('stop_ads', (ctx: Context) => {
+// FIXED: Added async and await here too
+bot.command('stop_ads', async (ctx: Context) => {
     if (!ctx.chat) return;
     const chatId = ctx.chat.id;
     const timeout = activeCycles.get(chatId);
@@ -123,9 +125,9 @@ bot.command('stop_ads', (ctx: Context) => {
     if (timeout) {
         clearTimeout(timeout);
         activeCycles.delete(chatId);
-        ctx.reply('🛑 Auto-ads stopped.');
+        await ctx.reply('🛑 Auto-ads stopped.');
     } else {
-        ctx.reply('There are no ads currently running in this group.');
+        await ctx.reply('There are no ads currently running in this group.');
     }
 });
 
