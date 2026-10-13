@@ -2,6 +2,7 @@ import { Telegraf } from 'telegraf';
 import type { Context } from 'telegraf';
 import { message, channelPost, editedMessage, editedChannelPost } from 'telegraf/filters';
 import { translate } from '@vitalets/google-translate-api';
+import { HttpsProxyAgent } from 'https-proxy-agent'; // Changed to https-proxy-agent
 import * as dotenv from 'dotenv';
 
 // Load environment variables
@@ -30,7 +31,7 @@ const translationMap = new Map<number, number>();
 
 const bot = new Telegraf(token);
 
-// --- FIX 1: Global Error Handler ---
+// --- Global Error Handler ---
 // Prevents the bot from crashing on unhandled middleware errors
 bot.catch((err: any, ctx: Context) => {
     console.error(`❌ Error for ${ctx.updateType}:`, err);
@@ -131,11 +132,17 @@ bot.command('stop_ads', (ctx: Context) => {
 // --- Live Translation Engine Logic ---
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
-// --- FIX 2: Added Timeout Wrapper ---
-// Prevents the Google Translate API from hanging your entire webhook server
+// Setup the proxy agent
+const proxyUrl = process.env.PROXY_URL;
+// Using HttpsProxyAgent for secure (https://) proxy connections
+const agent = proxyUrl ? new HttpsProxyAgent(proxyUrl) : undefined;
+
 async function translateContent(text: string, langCode: string): Promise<string> {
     try {
-        const translatePromise = translate(text, { to: langCode });
+        const translatePromise = translate(text, {
+            to: langCode,
+            fetchOptions: { agent } // Injects the proxy into the fetch request
+        });
         const timeoutPromise = new Promise<never>((_, reject) =>
             setTimeout(() => reject(new Error('Translation API timeout')), 10000)
         );
@@ -157,7 +164,6 @@ async function generateTranslationMessage(text: string): Promise<string> {
             if (translatedText) {
                 finalMessage += `<b>${config.name}</b>\n${translatedText}\n\n`;
             }
-            // Keep the 1500ms delay to prevent Google rate limits
             await delay(1500);
         }
     }
@@ -249,16 +255,13 @@ bot.command('status', (ctx) => {
 
 // --- RENDER WEBHOOK LAUNCH LOGIC ---
 const PORT = Number(process.env.PORT) || 3000;
-const RENDER_URL = process.env.RENDER_EXTERNAL_URL; // Render provides this automatically
+const RENDER_URL = process.env.RENDER_EXTERNAL_URL;
 
 if (RENDER_URL) {
-    // If running on Render, use Webhooks to bypass the polling timeout
     bot.launch({
         webhook: {
             domain: RENDER_URL,
             port: PORT,
-            // --- FIX 4: Optional Webhook Secret Token ---
-            // Set WEBHOOK_SECRET in your Render environment variables for extra security
             secret_token: process.env.WEBHOOK_SECRET
         }
     }).then(() => {
@@ -267,8 +270,6 @@ if (RENDER_URL) {
         console.error('Critical error launching Webhook:', err);
     });
 } else {
-    // Fallback for local testing
-    // --- FIX 3: Added dropPendingUpdates ---
     bot.launch({ dropPendingUpdates: true }).then(() => {
         console.log('🤖 Bot is running in Local Polling mode');
     }).catch((err) => {
