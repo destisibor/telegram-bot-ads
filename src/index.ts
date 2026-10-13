@@ -267,7 +267,8 @@ bot.command('status', (ctx) => {
 
 // --- Launch & Initialization ---
 setTimeout(() => {
-    bot.launch({ dropPendingUpdates: true }).then(() => {
+    // Removed { dropPendingUpdates: true } to prevent initialization hangs
+    bot.launch().then(() => {
         console.log('🤖 Bot @Run_Node3_bot with Multi-Translation is up and running!');
     }).catch((err) => {
         console.error('Critical error launching bot:', err);
