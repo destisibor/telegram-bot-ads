@@ -4,6 +4,7 @@ import { message, channelPost, editedMessage, editedChannelPost } from 'telegraf
 import { translate } from '@vitalets/google-translate-api';
 import { HttpsProxyAgent } from 'https-proxy-agent'; // <-- FIXED: Using HTTPS agent
 import * as dotenv from 'dotenv';
+import express from 'express';
 
 // Load environment variables
 dotenv.config();
@@ -65,39 +66,35 @@ const adMessages = [
     `🚀 <b>THE CHOICE IS YOURS</b>\nStart with the package that matches your financial capacity.\nDifferent packages.\nDifferent durations.\nDifferent capital levels.\n\nFind the package that works for your plan.\n\n🚀 <b>الخيار لك</b>\nابدأ بالباقة التي تتناسب مع قدرتك المالية.\nباقات مختلفة.\nمدد مختلفة.\nمستويات رأس مال مختلفة.\n\nابحث عن الباقة التي تناسب خطتك.\n\n🚀 <b>LE CHOIX VOUS APPARTIENT</b>\nCommencez par le forfait qui correspond à votre capacité financière.\nDifférents forfaits.\nDifférentes durées.\nDifférents niveaux de capital.\n\nTrouvez le forfait qui convient à votre plan.\n\n🚀 <b>चुनाव आपका है</b>\nउस पैकेज से शुरुआत करें जो आपकी वित्तीय क्षमता से मेल खाता हो।\nविभिन्न पैकेज।\nविभिन्न अवधियाँ।\nविभिन्न पूंजी स्तर।\n\nवह पैकेज खोजें जो आपकी योजना के लिए काम करे।\n\n🚀 <b>انتخاب با شماست</b>\nبا بسته‌ای شروع کنید که با ظرفیت مالی شما مطابقت دارد.\nبسته‌های مختلف.\nمدت زمان‌های مختلف.\nسطوح مختلف سرمایه.\n\nبسته‌ای را پیدا کنید که برای برنامه شما مناسب باشد.`
 ];
 
-// Handles manual /packages command
-bot.command('packages', async (ctx: Context) => {
-    for (const msg of adMessages) {
-        await ctx.reply(msg, { parse_mode: 'HTML' });
-        await new Promise(resolve => setTimeout(resolve, 300));
-    }
-});
-
-// Handles the automated posting cycle
-bot.command('start_ads', async (ctx: Context) => {
-    if (!ctx.chat) return;
-    const chatId = ctx.chat.id;
-
+// =========================================
+// SHARED AD CYCLE TRIGGER
+//
+// Extracted from the original /start_ads command handler so both the
+// Telegram command and the HTTP /trigger-ads endpoint can start the
+// ad cycle. Returns an object indicating whether the cycle was started
+// or was already running.
+//
+// Uses bot.telegram.sendMessage / deleteMessage directly (rather than
+// ctx.telegram) so it can be called outside of a command context.
+// =========================================
+async function triggerAdsCycle(chatId: number): Promise<{ started: boolean; reason?: string }> {
     if (activeCycles.has(chatId)) {
-        await ctx.reply('⚠️ The automated ads are already running in this group!');
-        return;
+        return { started: false, reason: 'already_running' };
     }
-
-    await ctx.reply('✅ Auto-ads activated! The bot will post the packages sequentially, delete them after 30 minutes, wait 1 minute, and post again.');
 
     const runCycle = async () => {
         try {
             const sentMessageIds: number[] = [];
 
             for (const msgText of adMessages) {
-                const sentMsg = await ctx.telegram.sendMessage(chatId, msgText, { parse_mode: 'HTML' });
+                const sentMsg = await bot.telegram.sendMessage(chatId, msgText, { parse_mode: 'HTML' });
                 sentMessageIds.push(sentMsg.message_id);
                 await new Promise(resolve => setTimeout(resolve, 500));
             }
 
             const deletionTimeout = setTimeout(async () => {
                 for (const msgId of sentMessageIds) {
-                    await ctx.telegram.deleteMessage(chatId, msgId).catch(() => { });
+                    await bot.telegram.deleteMessage(chatId, msgId).catch(() => { });
                 }
 
                 const nextPostTimeout = setTimeout(() => runCycle(), POST_DELAY_MS);
@@ -111,7 +108,32 @@ bot.command('start_ads', async (ctx: Context) => {
             activeCycles.delete(chatId);
         }
     };
+
     runCycle();
+    return { started: true };
+}
+
+// Handles manual /packages command
+bot.command('packages', async (ctx: Context) => {
+    for (const msg of adMessages) {
+        await ctx.reply(msg, { parse_mode: 'HTML' });
+        await new Promise(resolve => setTimeout(resolve, 300));
+    }
+});
+
+// Handles the automated posting cycle (Telegram command path)
+bot.command('start_ads', async (ctx: Context) => {
+    if (!ctx.chat) return;
+    const chatId = ctx.chat.id;
+
+    const result = await triggerAdsCycle(chatId);
+
+    if (!result.started) {
+        await ctx.reply('⚠️ The automated ads are already running in this group!');
+        return;
+    }
+
+    await ctx.reply('✅ Auto-ads activated! The bot will post the packages sequentially, delete them after 30 minutes, wait 1 minute, and post again.');
 });
 
 // Stops the automated cycle
@@ -252,23 +274,119 @@ bot.command('status', (ctx) => {
     ctx.reply(statusText, { parse_mode: 'HTML' });
 });
 
-// --- RENDER WEBHOOK LAUNCH LOGIC ---
+// =========================================
+// RENDER WEBHOOK + HTTP TRIGGER LAUNCH LOGIC
+//
+// Replaces the previous bot.launch({ webhook }) setup with an
+// Express server that:
+//
+//   • Mounts the Telegraf webhook at /webhook — this is where
+//     Telegram delivers updates (messages, commands, channel posts,
+//     etc.). Same behaviour as before from the bot's perspective.
+//
+//   • Exposes POST /trigger-ads — a plain HTTP endpoint the cron
+//     job can hit directly. Requires the x-api-key header to match
+//     the ADS_TRIGGER_API_KEY env var, so nobody else can spam ads
+//     into your group.
+//
+//   • Exposes GET /health — a trivial 200 OK for uptime monitors
+//     that just want to keep the container warm without triggering
+//     ads. No auth required.
+//
+// ENV VARS THIS SECTION NEEDS:
+//   • RENDER_EXTERNAL_URL  (already set by Render — e.g.
+//                           https://telegram-bot-ads-fk4q.onrender.com)
+//   • PORT                 (already set by Render)
+//   • WEBHOOK_SECRET       (optional — passed to Telegram as the
+//                           webhook secret_token; Telegraf verifies
+//                           it on every incoming webhook call)
+//   • ADS_TRIGGER_API_KEY  (NEW — a long random string. Used to
+//                           authenticate the /trigger-ads endpoint)
+//   • ADS_TARGET_CHAT_ID   (NEW — the group/channel where ads
+//                           should be posted. Example: -1003955992205)
+// =========================================
+
 const PORT = Number(process.env.PORT) || 3000;
 const RENDER_URL = process.env.RENDER_EXTERNAL_URL;
+const ADS_TRIGGER_API_KEY = process.env.ADS_TRIGGER_API_KEY;
 
 if (RENDER_URL) {
-    bot.launch({
-        webhook: {
-            domain: RENDER_URL,
-            port: PORT,
-            secretToken: process.env.WEBHOOK_SECRET
+    // ---- Webhook mode (production, on Render) ----
+
+    const app = express();
+    app.use(express.json());
+
+    // ---- Telegram webhook route ----
+    //
+    // bot.webhookCallback() returns an Express-compatible middleware
+    // that verifies the secret_token (if WEBHOOK_SECRET is set) and
+    // dispatches updates into Telegraf's middleware chain.
+    const webhookPath = '/webhook';
+    const webhookMiddleware = bot.webhookCallback(webhookPath, {
+        secretToken: process.env.WEBHOOK_SECRET
+    });
+    app.use(webhookMiddleware);
+
+    // ---- Cron-triggered ad endpoint ----
+    //
+    // Accepts POST with header  x-api-key: <ADS_TRIGGER_API_KEY>.
+    // Body (optional): { "chatId": -100... } to override the
+    // default chat from ADS_TARGET_CHAT_ID.
+    //
+    // Returns:
+    //   200 { success: true,  chatId, message }   — cycle started
+    //   409 { success: false, reason, chatId }    — already running
+    //   400 { error }                             — missing chat id
+    //   403 { error }                             — bad/missing API key
+    app.post('/trigger-ads', async (req, res) => {
+        const providedKey = req.headers['x-api-key'];
+        if (!ADS_TRIGGER_API_KEY || providedKey !== ADS_TRIGGER_API_KEY) {
+            return res.status(403).json({ error: 'Forbidden — invalid or missing x-api-key' });
         }
-    }).then(() => {
-        console.log(`🚀 Bot is running in Webhook mode on Render (Port ${PORT})`);
-    }).catch((err) => {
-        console.error('Critical error launching Webhook:', err);
+
+        const chatId = Number((req.body && req.body.chatId) || process.env.ADS_TARGET_CHAT_ID);
+        if (!chatId || !Number.isFinite(chatId)) {
+            return res.status(400).json({
+                error: 'Missing chatId. Provide it in the body or set ADS_TARGET_CHAT_ID env var.'
+            });
+        }
+
+        const result = await triggerAdsCycle(chatId);
+
+        if (!result.started) {
+            return res.status(409).json({ success: false, reason: result.reason, chatId });
+        }
+        return res.json({ success: true, chatId, message: 'Ad cycle started.' });
+    });
+
+    // ---- Health check (no auth) ----
+    //
+    // Useful if you'd rather have the cron job just keep the container
+    // warm without triggering ads. Not required — /trigger-ads also
+    // wakes the container.
+    app.get('/health', (req, res) => {
+        res.json({ status: 'ok', uptime: process.uptime() });
+    });
+
+    // ---- Register the webhook with Telegram and start listening ----
+    app.listen(PORT, async () => {
+        console.log(`🚀 Ads bot running on Render (Port ${PORT})`);
+        console.log(`   Webhook endpoint: ${RENDER_URL}${webhookPath}`);
+        console.log(`   Cron trigger:     ${RENDER_URL}/trigger-ads`);
+        console.log(`   Health check:     ${RENDER_URL}/health`);
+
+        try {
+            await bot.telegram.setWebhook(`${RENDER_URL}${webhookPath}`, {
+                secret_token: process.env.WEBHOOK_SECRET
+            });
+            console.log('✅ Telegram webhook registered.');
+        } catch (err) {
+            console.error('❌ Failed to register Telegram webhook:', err);
+        }
     });
 } else {
+    // ---- Local polling mode (development) ----
+
     bot.launch({ dropPendingUpdates: true }).then(() => {
         console.log('🤖 Bot is running in Local Polling mode');
     }).catch((err) => {
